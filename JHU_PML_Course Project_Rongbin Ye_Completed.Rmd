@@ -1,0 +1,361 @@
+---
+title: "JHU_ML_Project4"
+author: "Rongbin_Ye"
+date: "3/01/2020"
+output:   
+  html_document:
+    toc: True
+    toc_float: true
+    number_sections: true
+    theme: "yeti"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **Disclaimer**
+This is an R Markdown document created by Rongbin Ye for the final project of JHU-coursera course, Practical Machine Learning. As part of the data scientist concerntration, this markdown is created by Rongbin Ye independently binding to the honor codes of Johns Hopkins University.The unauthorized usage is prohibited. 
+
+# **Executive Summary**
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, I will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The core business problem is to help clients who are using the equipment to tell which class their posture is belonging to. This is a typical question of classification. The expected output will be a predictive model that provide this information, focusing on providing highest precision. \
+
+The Data will be cleansed by treating missing data, wrong data type and overfitting because of over power. The major techniques used here are standardization and feature reduction by drop variables.Three models has been tested, a support vector machine, a random forest and a neauralnet multinomial work model. By the comparison in accuracy, kappas and performances for each individual class, the support vector machine model (svm-poly) proved to have the best performances. Hence, this model has been chosen to predict. 
+
+This report builds an algorithm, which is capable of detecting the posture of users effectively. The business problem has been directly solved. 
+
+# **Analysis**
+## *Data & Libraries*
+### Import Libraries
+```{r library,warning=FALSE, message=FALSE}
+# For Data Cleaning
+library(readr)
+library(tidyverse)
+# For Model Training
+library(caret)
+## multinomial logistic regression
+## for random forest - ensemble
+library(rpart)
+## for multinomial nuralnet work
+library(nnet)
+library(factoextra)
+library(ggfortify)
+library(kernlab)
+library(rsample)
+## Measurements
+library(MLmetrics)
+## for computation
+library(MASS)
+library(foreach)
+library(doParallel)
+library(e1071)
+```
+### Load Data
+```{r load data, echo=FALSE, warning=FALSE, message=FALSE}
+train_url = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+
+belllift_train = read_csv(train_url, na = c("NA","#DIV/0!",""))
+
+## Testsets
+test_url = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+
+belllift_test = read_csv(test_url, na = c("NA","#DIV/0!",""))
+```
+
+## *Explanatory Data Analysis (EDA)*
+```{r peak at Train, echo=FALSE}
+head(belllift_train, 10)
+```
+### EDA: Misintepretated Data
+```{r data cleaning}
+# Irrelevant Data: Timestamps, ID
+belllift_train <- belllift_train %>%
+  dplyr::select(- c("raw_timestamp_part_1","raw_timestamp_part_2", "cvtd_timestamp", "X1", "num_window"))
+
+belllift_test <- belllift_test %>%
+  dplyr::select(-c("raw_timestamp_part_1","raw_timestamp_part_2", "cvtd_timestamp", "X1","num_window"))
+
+# The Wrong Data Type
+## Id can be dropped
+
+## User_name
+belllift_train$user_name = as.factor(belllift_train$user_name)
+belllift_test$user_name = as.factor(belllift_test$user_name)
+
+## Target variable should be factorized
+belllift_train$classe = as.factor(belllift_train$classe)
+```
+### EDA: Imbalance Data
+The new_window data is highly imbalance. As there is no new window in test dataset, filter data with new_window = No. 
+```{r imbalance?}
+# The imbalance of data
+table(belllift_train$new_window)
+table(belllift_test$new_window)
+```
+
+```{R filter Yes, echo = FALSE, warning = FALSE}
+# drop Yes cases
+belllift_train %>% filter(new_window == "no")
+belllift_train$new_window = as.factor(belllift_train$new_window)
+belllift_test$new_window = as.factor(belllift_test$new_window)
+```
+
+### EDA: Missing Data & Trimming
+
+For this dataset, as most of the data records the 3-d positions for different parts, such as hand, wist, the missing data is the key data problem should be treated. In this case, instead of using Principle Component Analysis, I decided to drop directly the columns with too many sparcity, like kurtosis_Roll_belt, etc. Indeed, the existence of these variables are likely to harm the performance of the models. 
+```{r Missing?, message=FALSE, warning=FALSE}
+# Drop
+bellift_train_c <- belllift_train #creating another subset to iterate in loop
+for(i in 1:length(belllift_train)) { #for every column in the training dataset
+        if( sum( is.na( belllift_train[, i] ) ) /nrow(belllift_train) >= .6 ) { #if n?? NAs > 60% of total observations
+        for(j in 1:length(bellift_train_c)) {
+            if( length( grep(names(belllift_train[i]), names(bellift_train_c)[j]) ) ==1)  { #if the columns are the same:
+                bellift_train_c <- bellift_train_c[ , -j] #Remove that column
+            }   
+        } 
+    }
+}
+
+# Capture the shape of the trimmed trains
+dim(bellift_train_c)
+```
+
+Test data need to be converted in the same manner to keep model functioning normally. 
+```{r new test, warning=FALSE}
+# Filter the data
+# Selectors
+selector_name <- c(colnames(bellift_train_c)[1:54])
+bellift_test_c <- belllift_test %>%
+  dplyr::select(all_of(selector_name))
+dim(bellift_test_c)
+```
+
+### EDA: Imbalance Data?
+This check ensures that the target variables are distributed evenly across multiple classe. 
+```{r imbalance? after clean}
+# train dataset observation
+table(bellift_train_c$classe)
+```
+
+## *Data Wrangling*
+### Standardization 
+Indeed, the other manipulation should be done is the normalization. On one hand, the nomralization mitigates the potential problem of heskadacity. On the other hand, standardized data is more digestible by the models. 
+
+Here, I decided to use min-max normalization as the missing data demonstrates that there are different level of missing data in different columns, which might lead to a difference in standard deviation. Hence, using a more straightfoward normalization, the min-max normalization will hedge the potential risk. 
+```{r normalization}
+# Using Standard normalization
+bellift_train_c[is.na(bellift_train_c)] <- 0
+# for all the numeric
+numeric_train <- bellift_train_c %>% keep(is.numeric)
+bellift_train_c[colnames(numeric_train)] <- map(bellift_train_c[colnames(numeric_train)], scale)
+bellift_test_c[colnames(numeric_train)] <- map(bellift_test_c[colnames(numeric_train)], scale)
+```
+<aside> Pay attention to the normalization here. I changed the num of window into factor to avoid the potential impacts of standardizing the num of windows. 
+</aside>
+```{R train, valid, test}
+# create a validataion data set for training
+sample.set <- createDataPartition(bellift_train_c$classe, p = 0.75, list = FALSE)
+bellift_train_c2 <- bellift_train_c[sample.set, ]
+bellift_valid <- bellift_train_c[-sample.set, ]
+```
+```{r Train Valid Test, echo = FALSE}
+## Final Check
+#head(bellift_train_c2)
+#head(bellift_valid)
+#head(bellift_test_c)
+```
+
+## *Train Model*
+### Model Selections
+Based on the instruction, there are five postures need to be identify . Yet, in the test set there is no such column named *Classe*. Therefore, for the rigidity of the study, hereby a parameter tuning process is necessary. 
+
+Considering the properties of the response (multiple factors), i decide to try two major methods: 
+
+>1. Support Vector Machine: One of the most classic and powerful classifier. As it is able to handle both numeric and categorical variable, this method could be an effective model to implement. Furthermore, based on the five classes existing, a multinomial logistic regression model will be used(SVM-Poly).  
+
+>2. Random Forest: One of the most powerful ensemble classifiers in the machine learning Ensemble classifiers. The interpretation might be an issue, but, as the project does not ask for the interpretation, but only asked for the outcome. The random forest should provide credible prediction on test data. 
+
+>3. Neural Network Multinomial Logistic Regression: One of the most complicated but effective algorithm to classify in this case. Via this supervised learning process, a neural network could disentangle the information from a machine's perspective. The larger amount of numeric data and the low requirement for interpretation provide a solid foundation for introducing the Neural network in this case.
+
+  The performances of three models will be evaluated and compared in order to get the best model for test cases. There are three major criteria here: 
+  
+  1. Accuracy: The basic standards for measuring the performance of the models. 
+  
+  2. Kappa statistics: The adjusted accuracy hedged the probability of correct prediction by chance alone. Kappa provides a balanced view of the performance in True Positive and True Negative. 
+  
+  3. Other metrics breakdown by Cases: As long as the prediction is for multiple classes, it is important for have a look at the performances for different classes. 
+```{r}
+# For calculation power
+numcore <- detectCores() - 1
+registerDoParallel(numcore)
+```
+
+  
+### Model 1: Support Vector Machine
+```{r}
+# Train the control terms
+svmTrainControl = trainControl(method = "cv", number = 5, verboseIter = FALSE)
+# Look Up tunegrid
+modelLookup("svmLinear")
+# train the models
+svm.mod = train(classe ~., data = bellift_train_c2, method ="svmPoly", trControl = svmTrainControl, tunegrid = data.frame(degree = 1,scale = 1,C = c(.1,.5, 1.5)), metric = "Accuracy", preProc = c("center", "scale"),na.action = na.omit)
+```
+```{r}
+svm_new.mod<- svm(classe ~., data = bellift_train_c2,
+          method="C-classification", kernal="radial", 
+          gamma=0.1, cost=1)
+```
+
+### Model 2: Random Forest with Cross Validation
+#### Create Control Terms & Autotuning
+```{r}
+# Look Up 
+modelLookup("rf")
+
+# Create a search grid based on the available parameters.
+grid <- expand.grid(.mtry = c(2,3,4))
+
+# Control Object: 5 fold cross validation with the 'best' performing configuration.
+ctrl <-
+  trainControl(method = "cv",
+               number = 5,
+               selectionFunction = "best")
+```
+
+#### Random Forest with Cross Validation
+```{R}
+# Train Random Forest Model
+rf.mod <-
+  train(
+    classe ~ .,
+    na.action = na.exclude,
+    data = bellift_train_c2,
+    method = "rf",
+    metric = "kappa",
+    trControl = ctrl,
+    tuneGrid = grid
+  )
+```
+
+### Model 3: Modeling with Cross-Validation
+#### Neural Network dirven Multinominal Logistic Regression
+```{r, warning=FALSE, message=FALSE}
+# Neural Net Multinomial-300 iterations
+multi.mod <-
+    nnet::multinom(
+      classe ~ .,
+      data = bellift_train_c2,
+      control = rpart.control(cp = 0.005),
+      maxit = 300
+    )
+```
+
+```{r}
+#Stop Clusters
+stopImplicitCluster()
+```
+
+## *Performance Evaluation*
+### Accuracy Best
+```{r}
+test <- bellift_valid$classe
+svm_predict <- predict(svm.mod, newdata = bellift_valid, type = "raw")
+svm_accuracy <- mean( test == svm_predict)
+rf_predict <- predict(rf.mod, newdata = bellift_valid, type = "raw")
+rf_accuracy <- mean( test == rf_predict)
+
+multi_predict <- predict(multi.mod, newdata = bellift_valid, type = "class")
+multi_accuracy <- mean( test == multi_predict)
+
+all_accuracy <- rbind(svm_accuracy, rf_accuracy)
+all_accuracy <- rbind(all_accuracy, multi_accuracy)
+colnames(all_accuracy) = "Accuracy"
+all_accuracy
+```
+### Kappa Performances
+```{r}
+# svm performance
+  svm.matrix <- confusionMatrix(svm_predict, test, positive = "Yes")
+  svm.kappa <- as.numeric(svm.matrix$overall["Kappa"])
+
+# random forest performance
+  rf.matrix <- confusionMatrix(rf_predict, test, positive = "Yes")
+  rf.kappa <- as.numeric(rf.matrix$overall["Kappa"])
+
+#  multinomial model
+  multi.matrix <- confusionMatrix(multi_predict, test, positive = "Yes")
+  multi.kappa <- as.numeric(multi.matrix$overall["Kappa"])
+
+  all_kappa <- rbind(svm.kappa, rf.kappa, multi.kappa)
+  colnames(all_kappa) <- "Kappa"
+  all_kappa
+```
+### Breakdown by Classes
+```{r, echo=FALSE}
+# fmeasure for svm
+svm_perforance_byclass<- data.frame(svm.matrix$byClass)
+svm_perforance_byclass$model = "SVM"
+# fmeasure for rf
+rf_perforance_byclass<- data.frame(rf.matrix$byClass)
+rf_perforance_byclass$model = "RF"
+# fmeasure for NN:multinomial
+multi_perforance_byclass<- data.frame(multi.matrix$byClass)
+multi_perforance_byclass$model = "NN:Multi"
+```
+
+### Final Selection
+```{r}
+all_relevant <- cbind(all_accuracy, all_kappa)
+all_relevant
+```
+
+Joining these three criteria together, I decided to use support vector machine in this case. Surprisingly, the performance of the SVM poly is much better than the other two models. In regarding the criteria, the support vector machine has the accuracy of `r svm_accuracy` and the kappa of `r svm.kappa`.  
+
+Furthermore, using Occam's Razor principle, SVM model has relatively few hypotheses involved and is not driven by the random process, which introduce any unexpected intervention. 
+
+After considering these, the SVM model is the model will be used to predict the testset.
+
+## *Predictions*
+```{r, warning=FALSE, include = TRUE}
+# Prediction Machine
+final_prediction <- predict(newdata = bellift_test_c, svm.mod)
+final <- bellift_test_c
+final$classe <- final_prediction
+final$classe
+```
+
+# **Summary**
+In this project, I examined the dataset of belllifting and constituted three major machine learning models accordingly. The control of 5 fold cross-validation has been applied in the process to control the resubstititional error and improve the performance of the models. After tuning the models and predicting the result, these three has been compared and the best model has been selected to predict the result of the testset. 
+
+This study still can be improved by: 
+
+1) **Better Data collection.** Instead of having a hodgepodge of every type of wearable equipment, it will be awesome and helpful to put similar equipments together, thus avoiding the tremendous amount of missing inherent data. For example, watches data with a label and helmets' data with a label. 
+
+2) **Concerning the Overfitting Issue.** Indeed, as one can see, two models in this case, the accuracy is so high, which is very likely beening overfitting on the train sets. Fortunately, in the process, the testing result was not being influenced and enable to reach 85% of accuracy in the test set. yet, despite this is not technically an overfitting incidence, one should keep eyes on this issue, if the model will be applied in other data. 
+
+## *Final Outcome*
+```{r}
+table(final$classe)
+```
+
+## *Conclusion*
+> 1. Out of the three model chosen, the support vector machine model performs the best in the accuracy and kappa value, therefore, being selected as the major model use in this case. 
+
+> 2. The result of test has been stored in the following dataframe: final. The summary table has been provided followed.  
+
+> 3. For multinomial classification, the selection of model should be based on both information of overall performance and performance of model breakdown by classes.
+
+> 4. The SVM poly model performed the best in this case and reach the 85% accuracy for the final prediction set. 
+
+## *Meaning for Business - More Interaction*
+
+For these wearble equipments, building a proper model to detect the users which positions (actions) users are performing will add values on contents they are already offering. This added interactivity will boost the attractiveness to the Generation-Z (Mckinsey & co., 2018), population borned between 1995 - 2000, generation who care more about immersive experience and DIY products. 
+
+For example, business can develop gym products and game products. Recently, the Ring's Adventure, a physical excercise game with wearble senors on Switch platform, is a remarkable success. Users play and move to interact and the joy-cons, the controller, can feedback the data to direct users to do the right posture. Utilizing this technology, software and hardware manufactures could enable more interactivities with users to create greater fun. 
+
+### references:
+1. Mckinsey & co. 2010.‘True Gen’: Generation Z and its implications for companies. Retrived on 01/03/2020 from:  https://www.mckinsey.com/industries/consumer-packaged-goods/our-insights/true-gen-generation-z-and-its-implications-for-companies
